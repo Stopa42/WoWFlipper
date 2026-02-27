@@ -1,37 +1,50 @@
 # WoWFlipper
 
-This is a wow addon that lets you analyze and visualize the potential earnings from flipping consumables or reagents on WoW auction.
+WoWFlipper is a World of Warcraft addon that analyzes Auction House commodity listings and
+shows the potential earnings from buying out the first `N` units and relisting them at the
+new market floor.
 
-The idea is simple: Scan the amount and price of a selected item, then evaluate the potential profit from buying N amount of such item and selling it again for the new lowest price.
+## What it does
 
-For example, let's say there are following listings for Silverleaf:
-1g - 2x
-2g - 3x
-4g - 1x
+For a selected commodity, WoWFlipper:
+1. Reads the current commodity listings from the AH.
+2. Computes the cumulative buyout cost for each quantity `N`.
+3. Computes the relist revenue at the new lowest unit price after your buyout.
+4. Shows profit (absolute gold) and ROI (relative gain) for each `N`.
+5. Highlights best opportunities by absolute profit and by ROI.
 
-Then the price to pay for N items increses in the following way
-1x - 1g
-2x - 2g
-3x - 4g
-4x - 6g
-5x - 8g
-6x - 12g
+## Example
 
-with the earnings from reselling at the newly lowest price is
-1x - 1g
-2x - 4g
-3x - 6g
-4x - 8g
-5x - 20g
-6x - 24g
+Given listings:
+- `1g` × `2`
+- `2g` × `3`
+- `4g` × `1`
 
-making the profits equal to
-1x - 0g
-2x - 2g
-3x - 2g
-4x - 2g
-5x - 12g
-6x - 12g
+WoWFlipper computes:
+- cost curve: `1x=1g`, `2x=2g`, `3x=4g`, `4x=6g`, `5x=8g`, `6x=12g`
+- relist revenues: `1x=1g`, `2x=4g`, `3x=6g`, `4x=8g`, `5x=20g`, `6x=24g`
+- profits: `0g`, `2g`, `2g`, `2g`, `12g`, `12g`
 
-What this addon does is show you the profits as a function of number of pieces to flip in absolute (gold) and relative (ratio to investment needed). This lets you optimize the number of items to flip in order to maximize profits.
+## Installation
 
+1. Copy this repository folder to your AddOns folder as `WoWFlipper`:
+   - `_retail_/Interface/AddOns/WoWFlipper`
+2. Ensure these files are present inside it:
+   - `WoWFlipper.toc`
+   - `WoWFlipper.lua`
+3. Restart WoW or run `/reload`.
+
+## Usage
+
+1. Open the Auction House.
+2. Use either:
+   - Slash command: `/wowflipper <itemID or itemLink>`
+   - Addon panel to the right of the AH window: enter item ID/link and click **Scan**.
+3. Read results in:
+   - Chat output table.
+   - WoWFlipper panel output.
+
+## Notes
+
+- Works with **commodity** searches (stackable materials, reagents, consumables, etc.).
+- Uses the in-game Auction House API and requires AH to be open while scanning.

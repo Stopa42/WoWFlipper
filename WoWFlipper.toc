@@ -1,0 +1,8 @@
+## Interface: 110002
+## Title: WoWFlipper
+## Notes: Analyze auction house flipping opportunities for commodities.
+## Author: WoWFlipper Contributors
+## Version: 0.1.0
+## SavedVariables: WoWFlipperDB
+
+WoWFlipper.lua

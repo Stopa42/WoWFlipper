@@ -6,12 +6,14 @@ local WoWFlipper = {
     frame = nil,
     selectedBrowseItemID = nil,
     browseSelectionHooked = false,
+    maxInvestmentCopper = nil,
 }
 
 WoWFlipperDB = WoWFlipperDB or {}
 
 local COPPER_PER_GOLD = 10000
 local COPPER_PER_SILVER = 100
+local DEFAULT_POST_DURATION = 2
 
 local function formatMoney(copper)
     local sign = ""
@@ -58,7 +60,7 @@ local function flattenPrices(listings)
     return prices
 end
 
-local function calculateOpportunities(rawListings)
+local function calculateOpportunities(rawListings, itemID, isCommodity)
     local listings = copyListings(rawListings)
     local flattenedPrices = flattenPrices(listings)
 
@@ -73,7 +75,12 @@ local function calculateOpportunities(rawListings)
 
         local nextMarketUnitPrice = flattenedPrices[quantity + 1] or maxPurchasedUnitPrice
         local revenue = quantity * nextMarketUnitPrice
-        local profit = revenue - totalCost
+        local deposit = 0
+        if isCommodity and itemID and C_AuctionHouse and C_AuctionHouse.CalculateCommodityDeposit then
+            deposit = C_AuctionHouse.CalculateCommodityDeposit(itemID, DEFAULT_POST_DURATION, quantity) or 0
+        end
+
+        local profit = revenue - totalCost - deposit
         local roi = 0
 
         if totalCost > 0 then
@@ -85,6 +92,7 @@ local function calculateOpportunities(rawListings)
             investment = totalCost,
             relistUnitPrice = nextMarketUnitPrice,
             revenue = revenue,
+            deposit = deposit,
             profit = profit,
             roi = roi,
         }
@@ -202,6 +210,9 @@ local function buildReportLines(opportunities)
     end
 
     lines[#lines + 1] = string.format("Chart scale: +/- %s", formatMoney(peakProfit))
+    if opportunities[1] and opportunities[1].deposit and opportunities[1].deposit > 0 then
+        lines[#lines + 1] = "Profit includes estimated AH deposit (24h repost)."
+    end
 
     return lines
 end
@@ -209,11 +220,15 @@ end
 local function printReport(opportunities)
     local byProfit = bestByProfit(opportunities)
     local byROI = bestByROI(opportunities)
+    local includesDeposit = opportunities[1] and opportunities[1].deposit and opportunities[1].deposit > 0
 
     DEFAULT_CHAT_FRAME:AddMessage(string.format(
         "|cff00ff96WoWFlipper|r Scan complete: %d quantity points analyzed.",
         #opportunities
     ))
+    if includesDeposit then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff96WoWFlipper|r Profit includes estimated AH deposit (24h repost).")
+    end
 
     if byProfit then
         DEFAULT_CHAT_FRAME:AddMessage(string.format(
@@ -259,6 +274,74 @@ local function parseItemID(input)
     return nil
 end
 
+local function parseMaxInvestmentGold(input)
+    if not input then
+        return nil, true
+    end
+
+    local trimmed = strtrim(input)
+    if trimmed == "" then
+        return nil, true
+    end
+
+    local goldValue = tonumber(trimmed)
+    if not goldValue or goldValue < 0 then
+        return nil, false
+    end
+
+    return math.floor((goldValue * COPPER_PER_GOLD) + 0.5), true
+end
+
+local processListingsForItem
+
+local function tryUseExistingSearchResults(itemID)
+    local commodityResultCount = C_AuctionHouse.GetNumCommoditySearchResults(itemID)
+    if commodityResultCount and commodityResultCount > 0 then
+        local listings = {}
+        for index = 1, commodityResultCount do
+            local result = C_AuctionHouse.GetCommoditySearchResultInfo(itemID, index)
+            if result and result.quantity and result.unitPrice and result.quantity > 0 then
+                listings[#listings + 1] = {
+                    quantity = result.quantity,
+                    unitPrice = result.unitPrice,
+                }
+            end
+        end
+
+        if #listings > 0 then
+            processListingsForItem(itemID, listings, "WoWFlipper: No commodity listings found for that item.", true)
+            print(string.format("WoWFlipper: Using existing commodity results for item %d.", itemID))
+            return true
+        end
+    end
+
+    local itemKey = { itemID = itemID }
+    local itemResultCount = C_AuctionHouse.GetNumItemSearchResults(itemKey)
+    if itemResultCount and itemResultCount > 0 then
+        local listings = {}
+        for index = 1, itemResultCount do
+            local result = C_AuctionHouse.GetItemSearchResultInfo(itemKey, index)
+            if result and result.buyoutAmount and result.buyoutAmount > 0 then
+                local quantity = result.quantity or 1
+                if quantity > 0 then
+                    listings[#listings + 1] = {
+                        quantity = quantity,
+                        unitPrice = math.floor(result.buyoutAmount / quantity),
+                    }
+                end
+            end
+        end
+
+        if #listings > 0 then
+            processListingsForItem(itemID, listings, "WoWFlipper: No item buyout listings found for that item.", false)
+            print(string.format("WoWFlipper: Using existing item results for item %d.", itemID))
+            return true
+        end
+    end
+
+    return false
+end
+
 local function runScan(itemID)
     if not C_AuctionHouse then
         print("WoWFlipper: Auction House API is unavailable.")
@@ -271,6 +354,10 @@ local function runScan(itemID)
     end
 
     WoWFlipper.pendingItemID = itemID
+    if tryUseExistingSearchResults(itemID) then
+        return
+    end
+
     C_AuctionHouse.SendSearchQuery({ itemID = itemID }, {}, true)
     print(string.format("WoWFlipper: Query sent for item %d.", itemID))
 end
@@ -412,13 +499,35 @@ eventFrame:RegisterEvent("COMMODITY_SEARCH_RESULTS_UPDATED")
 eventFrame:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED")
 eventFrame:RegisterEvent("AUCTION_HOUSE_SHOW")
 
-local function processListingsForItem(itemID, listings, noResultsMessage)
+processListingsForItem = function(itemID, listings, noResultsMessage, isCommodity)
     if #listings == 0 then
         print(noResultsMessage)
         return
     end
 
-    local opportunities = calculateOpportunities(listings)
+    local opportunities = calculateOpportunities(listings, itemID, isCommodity)
+    if WoWFlipper.maxInvestmentCopper and WoWFlipper.maxInvestmentCopper > 0 then
+        local filtered = {}
+        for _, entry in ipairs(opportunities) do
+            if entry.investment <= WoWFlipper.maxInvestmentCopper then
+                filtered[#filtered + 1] = entry
+            end
+        end
+        opportunities = filtered
+    end
+
+    if #opportunities == 0 then
+        if WoWFlipper.maxInvestmentCopper and WoWFlipper.maxInvestmentCopper > 0 then
+            print(string.format(
+                "WoWFlipper: No opportunities found within max investment of %s.",
+                formatMoney(WoWFlipper.maxInvestmentCopper)
+            ))
+        else
+            print(noResultsMessage)
+        end
+        return
+    end
+
     WoWFlipper.opportunities = opportunities
     WoWFlipperDB.lastItemID = itemID
     WoWFlipperDB.lastScan = opportunities
@@ -468,10 +577,23 @@ local function createWindow()
     useSelectedButton:SetText("Use Selected")
     useSelectedButton:SetPoint("LEFT", button, "RIGHT", 8, 0)
 
+    local maxInvestmentLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    maxInvestmentLabel:SetPoint("TOPLEFT", input, "BOTTOMLEFT", 0, -10)
+    maxInvestmentLabel:SetText("Max investment (gold, optional)")
+
+    local maxInvestmentInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    maxInvestmentInput:SetSize(140, 24)
+    maxInvestmentInput:SetPoint("TOPLEFT", maxInvestmentLabel, "BOTTOMLEFT", 0, -8)
+    maxInvestmentInput:SetAutoFocus(false)
+
+    if WoWFlipper.maxInvestmentCopper and WoWFlipper.maxInvestmentCopper > 0 then
+        maxInvestmentInput:SetText(tostring(WoWFlipper.maxInvestmentCopper / COPPER_PER_GOLD))
+    end
+
     local output = CreateFrame("EditBox", nil, frame)
     output:SetMultiLine(true)
     output:SetFontObject("GameFontHighlightSmall")
-    output:SetPoint("TOPLEFT", input, "BOTTOMLEFT", 0, -12)
+    output:SetPoint("TOPLEFT", maxInvestmentInput, "BOTTOMLEFT", 0, -12)
     output:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -16, 16)
     output:SetTextInsets(8, 8, 8, 8)
     output:SetAutoFocus(false)
@@ -498,6 +620,14 @@ local function createWindow()
             return
         end
 
+        local maxInvestmentCopper, ok = parseMaxInvestmentGold(maxInvestmentInput:GetText())
+        if not ok then
+            print("WoWFlipper: Enter a valid max investment amount in gold (for example: 2500 or 2500.5).")
+            return
+        end
+
+        WoWFlipper.maxInvestmentCopper = maxInvestmentCopper
+        WoWFlipperDB.maxInvestmentCopper = maxInvestmentCopper
         runScan(itemID)
     end)
 
@@ -524,6 +654,8 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         if loadedAddonName ~= addonName then
             return
         end
+
+        WoWFlipper.maxInvestmentCopper = WoWFlipperDB.maxInvestmentCopper
 
         SLASH_WOWFLIPPER1 = "/wowflipper"
         SlashCmdList.WOWFLIPPER = function(msg)
@@ -559,7 +691,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             end
         end
 
-        processListingsForItem(itemID, listings, "WoWFlipper: No commodity listings found for that item.")
+        processListingsForItem(itemID, listings, "WoWFlipper: No commodity listings found for that item.", true)
     elseif event == "ITEM_SEARCH_RESULTS_UPDATED" then
         local itemKey = ...
         if not itemKey or not itemKey.itemID or itemKey.itemID ~= WoWFlipper.pendingItemID then
@@ -582,6 +714,6 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             end
         end
 
-        processListingsForItem(itemKey.itemID, listings, "WoWFlipper: No item buyout listings found for that item.")
+        processListingsForItem(itemKey.itemID, listings, "WoWFlipper: No item buyout listings found for that item.", false)
     end
 end)

@@ -219,7 +219,20 @@ local function readItemIDFromItemDisplay(itemDisplay)
     return nil
 end
 
-local function getItemIDFromAuctionHouseSelection()
+local function itemIDFromLink(link)
+    if not link then
+        return nil
+    end
+
+    local itemID = link:match("item:(%d+)")
+    if itemID then
+        return tonumber(itemID)
+    end
+
+    return nil
+end
+
+local function getItemIDFromRetailAuctionHouseSelection()
     if not AuctionHouseFrame then
         return nil
     end
@@ -247,6 +260,49 @@ local function getItemIDFromAuctionHouseSelection()
     end
 
     return nil
+end
+
+local function getItemIDFromClassicAuctionHouseSelection()
+    if type(GetSelectedAuctionItem) ~= "function" then
+        return nil
+    end
+
+    local selectedIndex = GetSelectedAuctionItem("list")
+    if selectedIndex and selectedIndex > 0 then
+        if type(GetAuctionItemInfo) == "function" then
+            local _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, itemID = GetAuctionItemInfo("list", selectedIndex)
+            if itemID then
+                return itemID
+            end
+        end
+
+        if type(GetAuctionItemLink) == "function" then
+            local selectedLink = GetAuctionItemLink("list", selectedIndex)
+            local selectedItemID = itemIDFromLink(selectedLink)
+            if selectedItemID then
+                return selectedItemID
+            end
+        end
+    end
+
+    if BrowseName and BrowseName.GetText then
+        local browseText = BrowseName:GetText()
+        local browseItemID = parseItemID(browseText)
+        if browseItemID then
+            return browseItemID
+        end
+    end
+
+    return nil
+end
+
+local function getItemIDFromAuctionHouseSelection()
+    local retailItemID = getItemIDFromRetailAuctionHouseSelection()
+    if retailItemID then
+        return retailItemID
+    end
+
+    return getItemIDFromClassicAuctionHouseSelection()
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -331,7 +387,7 @@ local function createWindow()
     useSelectedButton:SetScript("OnClick", function()
         local itemID = getItemIDFromAuctionHouseSelection()
         if not itemID then
-            print("WoWFlipper: Select an item in the Auction House browse results first.")
+            print("WoWFlipper: Could not detect a selected item. Click a browse result first.")
             return
         end
 

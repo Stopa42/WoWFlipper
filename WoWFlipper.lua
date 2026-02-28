@@ -196,6 +196,59 @@ local function runScan(itemID)
     print(string.format("WoWFlipper: Query sent for item %d.", itemID))
 end
 
+local function readItemIDFromItemDisplay(itemDisplay)
+    if not itemDisplay then
+        return nil
+    end
+
+    if itemDisplay.GetItemID then
+        local itemID = itemDisplay:GetItemID()
+        if itemID then
+            return itemID
+        end
+    end
+
+    if itemDisplay.itemKey and itemDisplay.itemKey.itemID then
+        return itemDisplay.itemKey.itemID
+    end
+
+    if itemDisplay.itemID then
+        return itemDisplay.itemID
+    end
+
+    return nil
+end
+
+local function getItemIDFromAuctionHouseSelection()
+    if not AuctionHouseFrame then
+        return nil
+    end
+
+    local framesToCheck = {
+        AuctionHouseFrame.CommoditiesBuyFrame and AuctionHouseFrame.CommoditiesBuyFrame.ItemDisplay,
+        AuctionHouseFrame.ItemBuyFrame and AuctionHouseFrame.ItemBuyFrame.ItemDisplay,
+        AuctionHouseFrame.CommoditiesSellFrame and AuctionHouseFrame.CommoditiesSellFrame.ItemDisplay,
+        AuctionHouseFrame.ItemSellFrame and AuctionHouseFrame.ItemSellFrame.ItemDisplay,
+    }
+
+    for _, itemDisplay in ipairs(framesToCheck) do
+        local itemID = readItemIDFromItemDisplay(itemDisplay)
+        if itemID then
+            return itemID
+        end
+    end
+
+    if AuctionHouseFrame.CommoditiesSellFrame and AuctionHouseFrame.CommoditiesSellFrame.itemID then
+        return AuctionHouseFrame.CommoditiesSellFrame.itemID
+    end
+
+    if AuctionHouseFrame.ItemSellFrame and AuctionHouseFrame.ItemSellFrame.itemKey and AuctionHouseFrame.ItemSellFrame.itemKey.itemID then
+        return AuctionHouseFrame.ItemSellFrame.itemKey.itemID
+    end
+
+    return nil
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("COMMODITY_SEARCH_RESULTS_UPDATED")
@@ -237,6 +290,11 @@ local function createWindow()
     button:SetText("Scan")
     button:SetPoint("LEFT", input, "RIGHT", 8, 0)
 
+    local useSelectedButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    useSelectedButton:SetSize(120, 24)
+    useSelectedButton:SetText("Use Selected")
+    useSelectedButton:SetPoint("LEFT", button, "RIGHT", 8, 0)
+
     local output = CreateFrame("EditBox", nil, frame)
     output:SetMultiLine(true)
     output:SetFontObject("GameFontHighlightSmall")
@@ -268,6 +326,17 @@ local function createWindow()
         end
 
         runScan(itemID)
+    end)
+
+    useSelectedButton:SetScript("OnClick", function()
+        local itemID = getItemIDFromAuctionHouseSelection()
+        if not itemID then
+            print("WoWFlipper: Select an item in the Auction House browse results first.")
+            return
+        end
+
+        input:SetText(tostring(itemID))
+        print(string.format("WoWFlipper: Selected item %d loaded.", itemID))
     end)
 
     frame.output = output

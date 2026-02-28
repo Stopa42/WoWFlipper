@@ -39,7 +39,9 @@ WoWFlipper computes:
 1. Open the Auction House.
 2. Use either:
    - Slash command: `/wowflipper <itemID or itemLink>`
-   - Addon panel to the right of the AH window: enter item ID/link and click **Scan**.
+   - Addon panel to the right of the AH window:
+     - enter item ID/link and click **Scan**, or
+     - select an item in the AH UI and click **Use Selected** to auto-fill the item ID.
 3. Read results in:
    - Chat output table.
    - WoWFlipper panel output.

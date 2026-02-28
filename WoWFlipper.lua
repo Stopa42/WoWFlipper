@@ -4,6 +4,8 @@ local WoWFlipper = {
     pendingItemID = nil,
     opportunities = nil,
     frame = nil,
+    selectedBrowseItemID = nil,
+    browseSelectionHooked = false,
 }
 
 WoWFlipperDB = WoWFlipperDB or {}
@@ -12,10 +14,17 @@ local COPPER_PER_GOLD = 10000
 local COPPER_PER_SILVER = 100
 
 local function formatMoney(copper)
-    local gold = math.floor(copper / COPPER_PER_GOLD)
-    local silver = math.floor((copper % COPPER_PER_GOLD) / COPPER_PER_SILVER)
-    local copperRemainder = copper % COPPER_PER_SILVER
-    return string.format("%dg %ds %dc", gold, silver, copperRemainder)
+    local sign = ""
+    local value = copper
+    if value < 0 then
+        sign = "-"
+        value = -value
+    end
+
+    local gold = math.floor(value / COPPER_PER_GOLD)
+    local silver = math.floor((value % COPPER_PER_GOLD) / COPPER_PER_SILVER)
+    local copperRemainder = value % COPPER_PER_SILVER
+    return string.format("%s%dg %ds %dc", sign, gold, silver, copperRemainder)
 end
 
 local function copyListings(rawListings)
@@ -106,21 +115,69 @@ local function bestByROI(opportunities)
     return best
 end
 
+local function sampleOpportunities(opportunities, maxPoints)
+    if #opportunities <= maxPoints then
+        return opportunities
+    end
+
+    local sampled = {}
+    local lastIndex = #opportunities
+    for pointIndex = 1, maxPoints do
+        local interpolation = (pointIndex - 1) / (maxPoints - 1)
+        local sourceIndex = math.floor((interpolation * (lastIndex - 1)) + 1.5)
+        sampled[#sampled + 1] = opportunities[sourceIndex]
+    end
+
+    return sampled
+end
+
+local function maxAbsProfit(opportunities)
+    local maxValue = 0
+    for _, entry in ipairs(opportunities) do
+        maxValue = math.max(maxValue, math.abs(entry.profit))
+    end
+
+    return maxValue
+end
+
+local function buildProfitBar(value, maxValue, width)
+    if maxValue <= 0 then
+        return string.rep(".", width)
+    end
+
+    local magnitude = math.floor((math.abs(value) / maxValue) * width + 0.5)
+    magnitude = math.max(0, math.min(width, magnitude))
+
+    if value >= 0 then
+        return string.rep("+", magnitude) .. string.rep(".", width - magnitude)
+    end
+
+    return string.rep("-", magnitude) .. string.rep(".", width - magnitude)
+end
+
 local function buildReportLines(opportunities)
+    local maxChartPoints = 40
+    local barWidth = 28
+    local sampled = sampleOpportunities(opportunities, maxChartPoints)
+    local peakProfit = maxAbsProfit(opportunities)
+
     local lines = {
-        "Qty | Investment | Relist Unit Price | Revenue | Profit | ROI",
-        "---------------------------------------------------------------",
+        string.format(
+            "Profit chart (%d sampled points from %d quantities)",
+            #sampled,
+            #opportunities
+        ),
+        "Qty | Profit | ROI | Chart",
+        "--------------------------",
     }
 
-    for _, entry in ipairs(opportunities) do
+    for _, entry in ipairs(sampled) do
         lines[#lines + 1] = string.format(
-            "%d | %s | %s | %s | %s | %.2f%%",
+            "%d | %s | %.2f%% | %s",
             entry.quantity,
-            formatMoney(entry.investment),
-            formatMoney(entry.relistUnitPrice),
-            formatMoney(entry.revenue),
             formatMoney(entry.profit),
-            entry.roi * 100
+            entry.roi * 100,
+            buildProfitBar(entry.profit, peakProfit, barWidth)
         )
     end
 
@@ -144,12 +201,34 @@ local function buildReportLines(opportunities)
         )
     end
 
+    lines[#lines + 1] = string.format("Chart scale: +/- %s", formatMoney(peakProfit))
+
     return lines
 end
 
 local function printReport(opportunities)
-    for _, line in ipairs(buildReportLines(opportunities)) do
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff96WoWFlipper|r " .. line)
+    local byProfit = bestByProfit(opportunities)
+    local byROI = bestByROI(opportunities)
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff96WoWFlipper|r Scan complete: %d quantity points analyzed.",
+        #opportunities
+    ))
+
+    if byProfit then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "|cff00ff96WoWFlipper|r Best profit: %d units for %s.",
+            byProfit.quantity,
+            formatMoney(byProfit.profit)
+        ))
+    end
+
+    if byROI then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "|cff00ff96WoWFlipper|r Best ROI: %d units at %.2f%%.",
+            byROI.quantity,
+            byROI.roi * 100
+        ))
     end
 end
 
@@ -237,6 +316,10 @@ local function getItemIDFromRetailAuctionHouseSelection()
         return nil
     end
 
+    if WoWFlipper.selectedBrowseItemID then
+        return WoWFlipper.selectedBrowseItemID
+    end
+
     local framesToCheck = {
         AuctionHouseFrame.CommoditiesBuyFrame and AuctionHouseFrame.CommoditiesBuyFrame.ItemDisplay,
         AuctionHouseFrame.ItemBuyFrame and AuctionHouseFrame.ItemBuyFrame.ItemDisplay,
@@ -305,10 +388,44 @@ local function getItemIDFromAuctionHouseSelection()
     return getItemIDFromClassicAuctionHouseSelection()
 end
 
+local function hookBrowseSelection()
+    if WoWFlipper.browseSelectionHooked or not AuctionHouseFrame then
+        return
+    end
+
+    if type(AuctionHouseFrame.SelectBrowseResult) ~= "function" then
+        return
+    end
+
+    hooksecurefunc(AuctionHouseFrame, "SelectBrowseResult", function(_, rowData)
+        if rowData and rowData.itemKey and rowData.itemKey.itemID then
+            WoWFlipper.selectedBrowseItemID = rowData.itemKey.itemID
+        end
+    end)
+
+    WoWFlipper.browseSelectionHooked = true
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("COMMODITY_SEARCH_RESULTS_UPDATED")
+eventFrame:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED")
 eventFrame:RegisterEvent("AUCTION_HOUSE_SHOW")
+
+local function processListingsForItem(itemID, listings, noResultsMessage)
+    if #listings == 0 then
+        print(noResultsMessage)
+        return
+    end
+
+    local opportunities = calculateOpportunities(listings)
+    WoWFlipper.opportunities = opportunities
+    WoWFlipperDB.lastItemID = itemID
+    WoWFlipperDB.lastScan = opportunities
+
+    printReport(opportunities)
+    updateFrame(opportunities)
+end
 
 local function createWindow()
     if WoWFlipper.frame then
@@ -420,6 +537,8 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
     elseif event == "AUCTION_HOUSE_SHOW" then
         createWindow()
+        WoWFlipper.selectedBrowseItemID = nil
+        hookBrowseSelection()
         WoWFlipper.frame:Show()
     elseif event == "COMMODITY_SEARCH_RESULTS_UPDATED" then
         local itemID = ...
@@ -440,17 +559,29 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             end
         end
 
-        if #listings == 0 then
-            print("WoWFlipper: No commodity listings found for that item.")
+        processListingsForItem(itemID, listings, "WoWFlipper: No commodity listings found for that item.")
+    elseif event == "ITEM_SEARCH_RESULTS_UPDATED" then
+        local itemKey = ...
+        if not itemKey or not itemKey.itemID or itemKey.itemID ~= WoWFlipper.pendingItemID then
             return
         end
 
-        local opportunities = calculateOpportunities(listings)
-        WoWFlipper.opportunities = opportunities
-        WoWFlipperDB.lastItemID = itemID
-        WoWFlipperDB.lastScan = opportunities
+        local resultCount = C_AuctionHouse.GetNumItemSearchResults(itemKey)
+        local listings = {}
 
-        printReport(opportunities)
-        updateFrame(opportunities)
+        for index = 1, resultCount do
+            local result = C_AuctionHouse.GetItemSearchResultInfo(itemKey, index)
+            if result and result.buyoutAmount and result.buyoutAmount > 0 then
+                local quantity = result.quantity or 1
+                if quantity > 0 then
+                    listings[#listings + 1] = {
+                        quantity = quantity,
+                        unitPrice = math.floor(result.buyoutAmount / quantity),
+                    }
+                end
+            end
+        end
+
+        processListingsForItem(itemKey.itemID, listings, "WoWFlipper: No item buyout listings found for that item.")
     end
 end)
